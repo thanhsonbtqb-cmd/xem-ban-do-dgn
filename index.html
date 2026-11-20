@@ -2392,33 +2392,52 @@ ${faces.map((f) => faceKML(sh, f)).join('\n')}
 <Style id="thua"><IconStyle><scale>0</scale></IconStyle><LabelStyle><color>ff00ffff</color><scale>0.9</scale></LabelStyle><LineStyle><color>ff00ffff</color><width>2</width></LineStyle><PolyStyle><color>3300ffff</color></PolyStyle></Style>
 ${body}</Document></kml>`;
   }
+  // Xuất xong thì hiện bảng chọn. Nút "Mở bằng Google Earth" gọi bảng Chia sẻ ngay trong lần chạm
+  // (Safari chỉ cho mở bảng Chia sẻ khi gọi trực tiếp từ cú chạm, không được chờ tạo file trước).
   async function saveKMZ(base, k, okMsg) {
     base = base.replace(/[\\/:*?"<>|,\s]+/g, '_');
     const kmz = Archive.makeZip([{ name: 'doc.kml', data: k.xml }]);
-    if (navigator.share && navigator.canShare) {
+    const inFrame = (() => { try { return window.self !== window.top; } catch (e) { return true; } })();
+    let file = null;
+    if (!inFrame && navigator.share && navigator.canShare) {
       for (const type of ['application/vnd.google-earth.kmz', 'application/octet-stream']) {
-        let file; try { file = new File([kmz], base + '.kmz', { type }); } catch (e) { break; }
-        if (!navigator.canShare({ files: [file] })) continue;
-        try { await navigator.share({ files: [file], title: k.title }); toast('Chọn Google Earth trong bảng Chia sẻ để xem.', 4000); return; }
-        catch (e) { if (e && e.name === 'AbortError') return; break; }
+        let f; try { f = new File([kmz], base + '.kmz', { type }); } catch (e) { break; }
+        try { if (navigator.canShare({ files: [f] })) { file = f; break; } } catch (e) { /* thử kiểu khác */ }
       }
     }
-    try {
-      await saveBlob(base + '.kmz', kmz, 'application/vnd.google-earth.kmz');
-      toast(`${okMsg}${base}.kmz. Mở file bằng Google Earth.`, 6000);
-    } catch (e) {
-      const code = e && e.code;
-      if (code === 'declined') return;
-      if (code === 'rejected_extension' || code === 'extension_not_enabled') {
-        // Trang này không cho lưu đuôi .kmz: lưu file .zip chứa file .kml
-        try {
-          if (KMZ_FALLBACK === 'txt') { await saveBlob(base + '.kml.txt', k.xml, 'text/plain'); kmzHelpTxt(base); }
-          else { await saveBlob(base + '_GoogleEarth.zip', Archive.makeZip([{ name: base + '.kml', data: k.xml }]), 'application/zip'); kmzHelp(base); }
-        } catch (e2) { if (!(e2 && e2.code === 'declined')) toast('Không lưu được file: ' + (e2.message || e2.code || e2), 6000); }
-        return;
+    const m = $('modal'), b = $('mbox');
+    b.innerHTML = `<h3>🌍 File ${xesc(base)}.kmz đã sẵn sàng</h3>
+      <p class="small">${xesc(okMsg.replace(/ ra $/, ''))}.</p>
+      ${file ? `<button id="kmzShare" class="primary big" style="width:100%;margin:6px 0">📤 Mở bằng Google Earth</button>
+      <ol class="small" style="padding-left:18px"><li>Trong bảng Chia sẻ hiện ra, chọn biểu tượng <b>Earth</b> ở hàng ứng dụng.</li><li>Nếu không thấy, vuốt hàng ứng dụng sang trái, bấm <b>Thêm</b> (…), chọn <b>Earth</b>.</li><li>Chưa có ứng dụng Google Earth thì cài từ App Store, hoặc chọn <b>Lưu vào Tệp</b> để mở sau.</li></ol>`
+      : inFrame ? `<p class="small">Trong ứng dụng Claude không mở thẳng Google Earth được (ứng dụng chặn bảng Chia sẻ và không cho lưu đuôi .kmz). Bấm nút dưới để lưu file dạng .zip chứa file .kml, hoặc dùng <b>bản cài từ GitHub</b> trên màn hình chính để có nút <b>Mở bằng Google Earth</b>.</p>`
+      : `<p class="small">Trình duyệt này không có bảng Chia sẻ file. Hãy lưu file rồi mở bằng Google Earth.</p>`}
+      <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-top:8px"><button id="kmzSave">💾 Lưu file vào máy</button><button id="kmzClose">Đóng</button></div>`;
+    m.hidden = false;
+    $('kmzClose').onclick = () => { m.hidden = true; };
+    if (file) $('kmzShare').onclick = () => {
+      navigator.share({ files: [file], title: k.title }).then(() => { m.hidden = true; })
+        .catch((e) => { if (e && e.name === 'AbortError') return; toast('Không mở được bảng Chia sẻ: ' + (e.message || e.name) + '. Hãy bấm "Lưu file vào máy".', 6000); });
+    };
+    $('kmzSave').onclick = async () => {
+      m.hidden = true;
+      try {
+        await saveBlob(base + '.kmz', kmz, 'application/vnd.google-earth.kmz');
+        toast(`${okMsg}${base}.kmz. Mở file bằng Google Earth.`, 6000);
+      } catch (e) {
+        const code = e && e.code;
+        if (code === 'declined') return;
+        if (code === 'rejected_extension' || code === 'extension_not_enabled') {
+          // Trang này không cho lưu đuôi .kmz: lưu file .zip chứa file .kml
+          try {
+            if (KMZ_FALLBACK === 'txt') { await saveBlob(base + '.kml.txt', k.xml, 'text/plain'); kmzHelpTxt(base); }
+            else { await saveBlob(base + '_GoogleEarth.zip', Archive.makeZip([{ name: base + '.kml', data: k.xml }]), 'application/zip'); kmzHelp(base); }
+          } catch (e2) { if (!(e2 && e2.code === 'declined')) toast('Không lưu được file: ' + (e2.message || e2.code || e2), 6000); }
+          return;
+        }
+        toast('Không lưu được file: ' + (e.message || code || e), 6000);
       }
-      toast('Không lưu được file: ' + (e.message || code || e), 6000);
-    }
+    };
   }
   const KMZ_FALLBACK = 'zip';
   function kmzHelpTxt(base) {
