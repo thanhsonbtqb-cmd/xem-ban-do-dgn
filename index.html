@@ -2408,8 +2408,10 @@ ${body}</Document></kml>`;
     const m = $('modal'), b = $('mbox');
     b.innerHTML = `<h3>🌍 File ${xesc(base)}.kmz đã sẵn sàng</h3>
       <p class="small">${xesc(okMsg.replace(/ ra $/, ''))}.</p>
-      ${file ? `<button id="kmzShare" class="primary big" style="width:100%;margin:6px 0">📤 Mở bằng Google Earth</button>
-      <ol class="small" style="padding-left:18px"><li>Trong bảng Chia sẻ hiện ra, chọn biểu tượng <b>Earth</b> ở hàng ứng dụng.</li><li>Nếu không thấy, vuốt hàng ứng dụng sang trái, bấm <b>Thêm</b> (…), chọn <b>Earth</b>.</li><li>Chưa có ứng dụng Google Earth thì cài từ App Store, hoặc chọn <b>Lưu vào Tệp</b> để mở sau.</li></ol>`
+      ${file ? `<button id="kmzShare" class="primary big" style="width:100%;margin:6px 0">📤 Lưu vào Tệp (để mở bằng Google Earth)</button>
+      <p class="small" style="margin:6px 0 2px"><b>Bước 1 – Lưu file:</b> bấm nút xanh ở trên, trong bảng Chia sẻ kéo xuống chọn <b>Lưu vào Tệp</b>, chọn thư mục (ví dụ <i>Trên iPhone</i>) rồi bấm <b>Lưu</b>.</p>
+      <p class="small" style="margin:6px 0 2px"><b>Bước 2 – Mở trong Google Earth:</b> ứng dụng Google Earth trên iPhone không nhận file qua bảng Chia sẻ, phải mở từ bên trong ứng dụng:</p>
+      <ol class="small" style="padding-left:18px;margin-top:2px"><li>Mở <b>Google Earth</b>, bấm biểu tượng <b>Dự án</b> (hình tờ giấy có dấu ghim, ở thanh dưới hoặc trong menu ☰).</li><li>Bấm <b>Mở</b> (hoặc <b>Tạo</b>) &gt; <b>Nhập tệp KML</b>.</li><li>Chọn file <b>${xesc(base)}.kmz</b> vừa lưu trong <b>Tệp</b>. Ranh thửa hiện màu vàng trên ảnh vệ tinh.</li></ol>`
       : inFrame ? `<p class="small">Trong ứng dụng Claude không mở thẳng Google Earth được (ứng dụng chặn bảng Chia sẻ và không cho lưu đuôi .kmz). Bấm nút dưới để lưu file dạng .zip chứa file .kml, hoặc dùng <b>bản cài từ GitHub</b> trên màn hình chính để có nút <b>Mở bằng Google Earth</b>.</p>`
       : `<p class="small">Trình duyệt này không có bảng Chia sẻ file. Hãy lưu file rồi mở bằng Google Earth.</p>`}
       <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-top:8px"><button id="kmzSave">💾 Lưu file vào máy</button><button id="kmzClose">Đóng</button></div>`;
