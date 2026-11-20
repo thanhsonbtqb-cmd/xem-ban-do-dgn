@@ -1,5 +1,5 @@
 // Lưu chương trình vào máy để chạy khi không có mạng.
-const APP = 'bando-dgn-v2', TILES = '';
+const APP = 'bando-dgn-v3', TILES = '';
 const FILES = ['./', './index.html', './manifest.webmanifest', './icon-180.png', './icon-192.png', './icon-512.png'];
 self.addEventListener('install', (e) => { e.waitUntil(caches.open(APP).then((c) => c.addAll(FILES)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', (e) => { e.waitUntil(caches.keys().then((ks) => Promise.all(ks.filter((k) => k !== APP && k !== TILES).map((k) => caches.delete(k)))).then(() => self.clients.claim())); });
