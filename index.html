@@ -151,6 +151,7 @@ tr.edge td{color:var(--accent,#d33);font-weight:600;border-top:none;border-botto
       <button id="btnObj" title="Bấm vào đường, chữ, ký hiệu để xem thuộc lớp (level) nào">🎯 Đối tượng</button>
       <button id="btnMeasure" title="Đo khoảng cách, diện tích (bấm các điểm, bấm đúp để kết thúc, Esc để huỷ)">📏 Đo</button>
       <button id="btnBg" title="Đổi màu nền đen / trắng">◐ Nền</button>
+      <button id="btnKmzView" title="Xuất KMZ các thửa đang hiện trên màn hình (mở bằng Google Earth)">🌍 KMZ vùng đang xem</button>
       <button id="btnPng" title="Lưu hình đang xem thành ảnh PNG">🖼️ Lưu ảnh</button>
     </div>
     <span class="sep"></span>
@@ -228,6 +229,7 @@ tr.edge td{color:var(--accent,#d33);font-weight:600;border-top:none;border-botto
         <button id="fFit" aria-label="Xem toàn bộ">⤢</button>
         <button id="fObj" aria-label="Xem đối tượng thuộc lớp nào">🎯</button>
         <button id="fMeasure" aria-label="Đo">📏</button>
+        <button id="fKmz" aria-label="Xuất KMZ vùng đang xem">🌍</button>
         <button id="fSat" aria-label="Ảnh vệ tinh">🛰️</button>
         <button id="fBg" aria-label="Đổi nền">◐</button>
         <button id="fPng" aria-label="Lưu ảnh">🖼️</button>
@@ -2286,14 +2288,14 @@ return ret;
     return out.join(' ');
   }
   function faceKML(sh, f) {
-    const c = classify(f.texts || []), so = [...new Set(c.so)], loai = [...new Set(c.loai)], area = Math.abs(f.net || f.area);
+    const area = Math.abs(f.net || f.area), c = classify(f.texts || [], area), so = [...new Set(c.so)], loai = [...new Set(c.loai)];
     const lab = (f.texts || []).find((e) => so.length && e.text.trim() === so[0]);
     let lx, ly;
     if (lab) { lx = (lab.minx + lab.maxx) / 2; ly = (lab.miny + lab.maxy) / 2; }
     else { const r = f.ring; lx = 0; ly = 0; for (let i = 0; i < r.length; i += 2) { lx += r[i]; ly += r[i + 1]; } lx /= r.length / 2; ly /= r.length / 2; }
     const [la, lo] = VN2000.toWGS84(lx, ly, st.lon0);
     const name = (so[0] || '?') + (loai.length ? ' ' + loai.join(',') : '');
-    const rows = [['Tờ bản đồ', sh.name], ['Số thửa', so.join(', ') || '–'], ['Loại đất', loai.map((l) => l + (LAND[l] ? ' – ' + LAND[l] : '')).join('; ') || '–'], ['Diện tích tính (m²)', area.toFixed(1)], ['Diện tích ghi (m²)', [...new Set(c.dt)].join('; ') || '–']];
+    const rows = [['Tờ bản đồ', sh.name], ['Số thửa', so.join(', ') || '–'], ['Loại đất', loai.map((l) => l + (LAND[l] ? ' – ' + LAND[l] : '')).join('; ') || '–'], ['Diện tích tính (m²)', area.toFixed(1)], ['Diện tích ghi (m²)', (so.length > 1 && c.pairs.some((p) => p[0] === so[0]) ? c.dt[0] : [...new Set(c.dt)].join('; ')) || '–']];
     const desc = '<table>' + rows.map(([k, v]) => `<tr><td>${xesc(k)}</td><td><b>${xesc(v)}</b></td></tr>`).join('') + '</table>';
     return `<Placemark><name>${xesc(name)}</name><styleUrl>#thua</styleUrl><description><![CDATA[${desc}]]></description>
 <ExtendedData>${rows.map(([k, v]) => `<Data name="${xesc(k)}"><value>${xesc(v)}</value></Data>`).join('')}</ExtendedData>
@@ -2312,10 +2314,11 @@ ${faces.map((f) => faceKML(sh, f)).join('\n')}
 </Folder>${only ? '' : linesKML(sh)}</Document></kml>`;
     return { xml, count: faces.length + (only ? 0 : sh.model.elements.some((e) => e.kind === 'L') ? 1 : 0), parcels: faces.length, title };
   }
-  function linesKML(sh) {
+  function linesKML(sh, keep) {
     const by = new Map();
     for (const e of sh.model.elements) {
       if (e.kind !== 'L' || e.sc || st.lvOn[e.lv] === false || !e.pts || e.pts.length < 4) continue;
+      if (keep && !keep(e)) continue;
       (by.get(e.lv) || by.set(e.lv, []).get(e.lv)).push(e.pts);
     }
     const pal = ['ffffffff', 'ff00ffff', 'ff00ff00', 'ff0080ff', 'ffff00ff', 'ffffff00', 'ff0000ff', 'ffff8000'];
@@ -2343,7 +2346,54 @@ ${faces.map((f) => faceKML(sh, f)).join('\n')}
     try { k = buildKML(sh, only); } catch (e) { busy(false); toast('Không tạo được KMZ: ' + e.message, 6000); return; }
     busy(false);
     if (!k.count) { toast('Tờ này không có đường nét hay thửa nào để xuất.', 6000); return; }
-    const base = (only ? `To${sh.name}_Thua${classify(only.texts || []).so[0] || ''}` : `To${sh.name}`).replace(/[\\/:*?"<>|]+/g, '_');
+    const base = (only ? `To${sh.name}_Thua${classify(only.texts || [], Math.abs(only.net)).so[0] || ''}` : `To${sh.name}`);
+    return saveKMZ(base, k, only ? `Đã xuất thửa ${classify(only.texts || [], Math.abs(only.net)).so[0] || ''} ra ` : `Đã xuất ${k.parcels} thửa và đường nét ra `);
+  }
+  // Xuất KMZ các thửa và đường nét trong vùng đang hiện trên màn hình
+  const KMZ_MAX_PARCELS = 800, KMZ_MAX_LINES = 30000;
+  async function exportKMZView() {
+    if (!st.sheets.length) { toast('Chưa mở tờ bản đồ nào.'); return; }
+    const [x0, y1] = s2w(0, 0), [x1, y0] = s2w(st.W, st.H);
+    const inV = (o) => !(o.maxx < x0 || o.minx > x1 || o.maxy < y0 || o.miny > y1);
+    busy(true, 'Đang gom các thửa trong vùng đang xem…'); await tick();
+    const parts = []; let nP = 0, nL = 0;
+    try {
+      for (const sh of st.sheets) {
+        if (!sh.visible || !inV(sh.model.bounds)) continue;
+        let nl = 0; for (const e of sh.model.elements) if (e.kind === 'L' && !e.sc && st.lvOn[e.lv] !== false && inV(e)) nl++;
+        nL += nl;
+        if (nL > KMZ_MAX_LINES) break;
+        const tp = sheetTopo(sh);
+        const faces = tp.faces.filter((f) => { if (!inV(f) || !isParcel(f)) return false; const c = classify(f.texts || []); return c.so.length && (c.loai.length || c.dt.length); });
+        nP += faces.length;
+        parts.push({ sh, faces });
+        if (nP > KMZ_MAX_PARCELS) break;
+      }
+    } catch (e) { busy(false); toast('Không gom được thửa: ' + e.message, 6000); return; }
+    busy(false);
+    if (nP > KMZ_MAX_PARCELS || nL > KMZ_MAX_LINES) { toast(`Vùng đang xem quá rộng (hơn ${nP > KMZ_MAX_PARCELS ? KMZ_MAX_PARCELS + ' thửa' : KMZ_MAX_LINES.toLocaleString('vi-VN') + ' đường nét'}). Hãy phóng to bản đồ rồi xuất lại.`, 6000); return; }
+    if (!parts.length || (!nP && !nL)) { toast('Vùng đang xem không có thửa hay đường nét nào để xuất.', 5000); return; }
+    busy(true, `Đang tạo KMZ (${nP} thửa)…`); await tick();
+    let k;
+    try {
+      const names = parts.map((p) => p.sh.name).join(', ');
+      const title = `Vùng đang xem – tờ ${names}`;
+      const body = parts.map((p) => `<Folder><name>Tờ ${xesc(p.sh.name)}: thửa đất (${p.faces.length})</name>\n${p.faces.map((f) => faceKML(p.sh, f)).join('\n')}\n</Folder>${linesKML(p.sh, inV).replace('<name>Đường nét theo lớp</name>', `<name>Tờ ${xesc(p.sh.name)}: đường nét theo lớp</name>`)}`).join('\n');
+      k = { xml: kmlDoc(title, body), count: nP + nL, parcels: nP, title };
+    } catch (e) { busy(false); toast('Không tạo được KMZ: ' + e.message, 6000); return; }
+    busy(false);
+    const base = 'VungDangXem_To' + parts.map((p) => p.sh.name).join('-');
+    return saveKMZ(base, k, `Đã xuất ${nP} thửa và đường nét trong vùng đang xem ra `);
+  }
+  function kmlDoc(title, body) {
+    return `<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>${xesc(title)}</name>
+<description>Xuất từ bản đồ địa chính DGN, VN-2000 kinh tuyến trục ${xesc(lon0Text(st.lon0))} (múi 3°), chuyển sang WGS84 bằng 7 tham số. Chỉ để tham khảo.</description>
+<Style id="thua"><IconStyle><scale>0</scale></IconStyle><LabelStyle><color>ff00ffff</color><scale>0.9</scale></LabelStyle><LineStyle><color>ff00ffff</color><width>2</width></LineStyle><PolyStyle><color>3300ffff</color></PolyStyle></Style>
+${body}</Document></kml>`;
+  }
+  async function saveKMZ(base, k, okMsg) {
+    base = base.replace(/[\\/:*?"<>|,\s]+/g, '_');
     const kmz = Archive.makeZip([{ name: 'doc.kml', data: k.xml }]);
     if (navigator.share && navigator.canShare) {
       for (const type of ['application/vnd.google-earth.kmz', 'application/octet-stream']) {
@@ -2355,7 +2405,7 @@ ${faces.map((f) => faceKML(sh, f)).join('\n')}
     }
     try {
       await saveBlob(base + '.kmz', kmz, 'application/vnd.google-earth.kmz');
-      toast(`Đã xuất ${k.parcels} thửa${only ? '' : ' và đường nét'} ra ${base}.kmz. Mở file bằng Google Earth.`, 6000);
+      toast(`${okMsg}${base}.kmz. Mở file bằng Google Earth.`, 6000);
     } catch (e) {
       const code = e && e.code;
       if (code === 'declined') return;
@@ -2403,6 +2453,7 @@ ${faces.map((f) => faceKML(sh, f)).join('\n')}
       <li><b>Xem thửa:</b> bấm vào trong một thửa để xem số thửa, loại đất, diện tích, bảng toạ độ đỉnh thửa.</li>
       <li><b>Tìm thửa:</b> chọn tờ, gõ số thửa rồi Enter. Cũng gõ được chữ bất kỳ (tên đường, tên chủ…).</li>
       <li><b>Xem đối tượng thuộc lớp nào:</b> bấm 🎯 Đối tượng rồi bấm vào đường, chữ, ký hiệu bất kỳ. Hiện lớp (level), màu, kiểu đường, font; có nút ẩn hoặc chỉ hiện lớp đó.</li>
+      <li><b>Xuất KMZ:</b> chọn một thửa rồi bấm 🌍 Xuất KMZ thửa này, hoặc phóng tới vùng cần lấy rồi bấm nút 🌍 để xuất các thửa đang hiện trên màn hình (tối đa 800 thửa). Mở file bằng Google Earth.</li>
       <li><b>Lớp:</b> thẻ <i>Lớp (level)</i> để bật/tắt từng lớp; bấm tên lớp để đặt tên gợi nhớ.</li>
       <li><b>Đo:</b> bấm 📏, chạm các điểm cần đo, chạm đúp để kết thúc. <b>Đổi nền:</b> bấm ◐ để đổi nền đen / trắng.</li>
       <li><b>Google Maps:</b> chạm vào thửa rồi bấm <i>📍 Xem trên Google Maps</i> để ghim tâm thửa trên Google Maps.</li>
@@ -2427,7 +2478,7 @@ ${faces.map((f) => faceKML(sh, f)).join('\n')}
     });
     rows += `<tr><td>1</td><td>${fmt(verts[0][1], 2)}</td><td>${fmt(verts[0][0], 2)}</td><td></td></tr>`;
     $('infoBody').innerHTML = `<h3>Thửa đất ${c.so.length ? 'số <b>' + esc(c.so[0]) + '</b>' : '(chưa có số thửa)'}</h3>
-      <div class="maplinks"><a class="btn primary big" href="${(() => { const [la, lo] = faceLL(f); return gmapsUrl(la, lo); })()}" target="_blank" rel="noopener">📍 Xem trên Google Maps</a>
+      <div class="maplinks"><a class="btn primary big" href="${(() => { const [la, lo] = faceLL(f); return gmapsUrl(la, lo); })()}" target="_blank" rel="noopener">📍 Xem trên Google Maps</a><button id="kmzF" class="big">🌍 Xuất KMZ thửa này</button>
 </div>
       <div class="kv">
         <div>Tờ bản đồ</div><div><b>${esc(sh.name)}</b></div>
@@ -2444,6 +2495,7 @@ ${faces.map((f) => faceKML(sh, f)).join('\n')}
       <div style="display:flex;gap:6px;margin-bottom:6px;flex-wrap:wrap"><button id="cpTbl">📋 Sao chép bảng (dán vào Excel)</button><button id="zmF">🔍 Phóng tới thửa</button></div>
       <table><thead><tr><th>Điểm</th><th>X (m)</th><th>Y (m)</th><th>Cạnh (m)</th></tr></thead><tbody>${rows}</tbody></table>
       <p class="small">Chiều dài cạnh ghi ở dòng giữa hai điểm (ví dụ 1-2 là cạnh từ điểm 1 đến điểm 2), và ghi ở giữa mỗi cạnh trên bản đồ. Diện tích tính từ ranh thửa trên các lớp: ${esc(sh.bnd.map(lvName).join(', '))}. ${f.holes ? 'Đã trừ ' + f.holes.length + ' vùng nằm trong thửa.' : ''}</p>`;
+    $('kmzF').onclick = () => exportKMZ(sh, f);
     $('cpTbl').onclick = () => {
       let tsv = `Tờ bản đồ\t${sh.name}\nThửa số\t${c.so[0] || ''}\nDiện tích (m2)\t${area.toFixed(1)}\n\nĐiểm\tX (m)\tY (m)\tCạnh (m)\n`;
       verts.forEach((p, i) => { const j = (i + 1) % verts.length, q = verts[j]; tsv += `${i + 1}\t${p[1].toFixed(2)}\t${p[0].toFixed(2)}\t\n${i + 1}-${j + 1}\t\t\t${Math.hypot(q[0] - p[0], q[1] - p[1]).toFixed(2)}\n`; });
@@ -2739,6 +2791,8 @@ ${faces.map((f) => faceKML(sh, f)).join('\n')}
   $('fMeasure').onclick = () => { setMode(st.mode === 'measure' ? 'info' : 'measure'); if (st.mode === 'measure' && isPhone()) $('info').classList.add('open'); };
   $('fObj').onclick = () => setMode(st.mode === 'obj' ? 'info' : 'obj');
   $('fBg').onclick = () => $('btnBg').click();
+  $('fKmz').onclick = () => exportKMZView();
+  $('btnKmzView').onclick = () => exportKMZView();
   $('fPng').onclick = () => $('btnPng').click();
   const setSat = (on) => { st.sat = on; st.satWarned = false; satFail = 0; LS.set('sat', on); syncSat(); draw();
     if (on && !st.sheets.length) toast('Mở một tờ bản đồ để xem ảnh vệ tinh tại vị trí đó.');
