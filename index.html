@@ -183,6 +183,8 @@ a.btn.big{font-size:1.05em;padding:9px 16px;font-weight:600}
         <h4>Lớp dùng làm ranh thửa</h4>
         <div id="bndList" class="small"></div>
         <p class="small">Chương trình tự dựng thửa đất từ các đường trên các lớp được chọn ở đây. Mặc định là lớp có nhiều đường nhất (thường là lớp ranh thửa).</p>
+        <h4>Chế độ nhẹ</h4>
+        <label><input type="checkbox" id="optLite"> Chế độ nhẹ cho điện thoại yếu: không tự dò lớp ranh thửa (dùng lớp có nhiều đường nhất), mở tờ nhanh và ít tốn bộ nhớ hơn</label>
         <h4>Tự lưu bản đồ</h4>
         <label><input type="checkbox" id="optAutoSave"> Tự lưu các tờ đã mở và tự mở lại khi vào chương trình</label>
         <p class="small"><span id="savedInfo"></span> Bản đồ chỉ lưu trong bộ nhớ trình duyệt của máy này, không gửi đi đâu. Bấm "Đóng" ở một tờ để bỏ tờ đó khỏi danh sách tự mở.</p>
@@ -610,6 +612,40 @@ const DGN = (() => {
     }
     model.levels = levels;
     model.bounds = { minx, miny, maxx, maxy };
+    // Khung nhìn: bỏ qua vài đối tượng nằm lạc xa vùng bản đồ (ví dụ vòng tròn ở gốc toạ độ 0,0)
+    model.view = model.bounds;
+    const ne = model.elements.length;
+    if (ne > 20) {
+      const cx = [], cy = [];
+      for (const e of model.elements) { cx.push((e.minx + e.maxx) / 2); cy.push((e.miny + e.maxy) / 2); }
+      const q = (a) => { const b = a.slice().sort((u, v) => u - v); return [b[Math.floor(b.length * 0.02)], b[Math.floor(b.length * 0.98)]]; };
+      const [x0, x1] = q(cx), [y0, y1] = q(cy);
+      const rx = Math.max(x1 - x0, 50) * 0.3, ry = Math.max(y1 - y0, 50) * 0.3;
+      const lo = [x0 - rx, y0 - ry], hi = [x1 + rx, y1 + ry];
+      let a = Infinity, b = Infinity, c = -Infinity, d = -Infinity, out = 0;
+      for (let i = 0; i < ne; i++) {
+        const e = model.elements[i];
+        if (e.minx < lo[0] || e.maxx > hi[0] || e.miny < lo[1] || e.maxy > hi[1]) { out++; continue; }
+        if (e.minx < a) a = e.minx; if (e.miny < b) b = e.miny; if (e.maxx > c) c = e.maxx; if (e.maxy > d) d = e.maxy;
+      }
+      if (out && isFinite(a)) model.view = { minx: a, miny: b, maxx: c, maxy: d };
+      // Ưu tiên vùng đối tượng dày đặc (chính tờ bản đồ), bỏ qua các nét thưa bên ngoài như đường địa giới xã
+      const V = model.view, G = 24, gw = (V.maxx - V.minx) / G || 1, gh = (V.maxy - V.miny) / G || 1;
+      const H = new Int32Array(G * G);
+      for (let i = 0; i < ne; i++) {
+        const gx = Math.floor((cx[i] - V.minx) / gw), gy = Math.floor((cy[i] - V.miny) / gh);
+        if (gx >= 0 && gx < G && gy >= 0 && gy < G) H[gy * G + gx]++;
+      }
+      let mx = 0; for (const v of H) if (v > mx) mx = v;
+      let g0 = G, g1 = -1, h0 = G, h1 = -1;
+      for (let gy = 0; gy < G; gy++) for (let gx = 0; gx < G; gx++) if (H[gy * G + gx] >= Math.max(3, mx * 0.05)) {
+        if (gx < g0) g0 = gx; if (gx > g1) g1 = gx; if (gy < h0) h0 = gy; if (gy > h1) h1 = gy;
+      }
+      if (g1 >= 0 && (g1 - g0 + 1) * (h1 - h0 + 1) < G * G * 0.7) {
+        g0 = Math.max(0, g0 - 1); h0 = Math.max(0, h0 - 1); g1 = Math.min(G - 1, g1 + 1); h1 = Math.min(G - 1, h1 + 1);
+        model.view = { minx: V.minx + g0 * gw, miny: V.miny + h0 * gh, maxx: V.minx + (g1 + 1) * gw, maxy: V.miny + (h1 + 1) * gh };
+      }
+    }
     return model;
   }
   function redecode(model, mode) {
@@ -1003,26 +1039,41 @@ const Topo = (() => {
     if (!S.length) return { faces: [] };
     // 2. Cắt đoạn tại giao điểm (lưới không gian)
     const n = S.length;
-    const cell = Math.max((maxx - minx + maxy - miny) / Math.sqrt(n) , tol * 10);
+    // Kích thước ô lưới theo vùng tập trung dữ liệu (bỏ qua vài đối tượng nằm lạc xa, ví dụ ở gốc toạ độ 0,0),
+    // nếu không cả tờ dồn vào một ô và phép so cặp thành O(n²) làm treo/sập máy.
+    const pct = (arr) => { arr.sort((a, b) => a - b); return [arr[Math.floor(arr.length * 0.02)], arr[Math.floor(arr.length * 0.98)]]; };
+    const stp = Math.max(1, Math.floor(n / 20000));
+    const sx = [], sy = [];
+    for (let k = 0; k < n; k += stp) { sx.push((S[k][0] + S[k][2]) / 2); sy.push((S[k][1] + S[k][3]) / 2); }
+    const [qx0, qx1] = pct(sx), [qy0, qy1] = pct(sy);
+    const cell = Math.max(((qx1 - qx0) + (qy1 - qy0)) / Math.sqrt(n), tol * 10, 1e-6);
     const grid = new Map();
     const key = (i, j) => i * 73856093 ^ j * 19349663;
+    const longs = [];
+    const I0 = new Int32Array(n), J0 = new Int32Array(n);
     S.forEach((s, k) => {
       const i0 = Math.floor((Math.min(s[0], s[2]) - minx) / cell), i1 = Math.floor((Math.max(s[0], s[2]) - minx) / cell);
       const j0 = Math.floor((Math.min(s[1], s[3]) - miny) / cell), j1 = Math.floor((Math.max(s[1], s[3]) - miny) / cell);
+      I0[k] = i0; J0[k] = j0;
+      if ((i1 - i0 + 1) * (j1 - j0 + 1) > 4096) { longs.push(k); return; }
       for (let i = i0; i <= i1; i++) for (let j = j0; j <= j1; j++) {
-        const kk = key(i, j); let a = grid.get(kk); if (!a) grid.set(kk, a = []); a.push(k);
+        const kk = key(i, j); let a = grid.get(kk); if (!a) { grid.set(kk, a = []); a.ci = i; a.cj = j; } a.push(k);
       }
     });
+    const BX0 = new Float64Array(n), BX1 = new Float64Array(n), BY0 = new Float64Array(n), BY1 = new Float64Array(n);
+    for (let k = 0; k < n; k++) { const s = S[k]; BX0[k] = Math.min(s[0], s[2]); BX1[k] = Math.max(s[0], s[2]); BY0[k] = Math.min(s[1], s[3]); BY1[k] = Math.max(s[1], s[3]); }
     const cuts = S.map(() => [0, 1]);
-    const tested = new Set();
-    for (const arr of grid.values()) {
-      for (let a = 0; a < arr.length; a++) for (let b = a + 1; b < arr.length; b++) {
+    const groups = grid.values();
+    const extra = [];
+    if (longs.length) { const all = []; for (let k = 0; k < n; k++) all.push(k); for (const L of longs) { const g = [L].concat(all.filter((k) => k !== L)); g.star = true; extra.push(g); } }
+    for (const arr of [...groups, ...extra]) {
+      const na = arr.star ? 1 : arr.length;
+      for (let a = 0; a < na; a++) for (let b = a + 1; b < arr.length; b++) {
         const i = arr[a], j = arr[b];
-        const pk = i < j ? i * n + j : j * n + i;
-        if (tested.has(pk)) continue; tested.add(pk);
+        if (BX1[i] < BX0[j] - tol || BX1[j] < BX0[i] - tol || BY1[i] < BY0[j] - tol || BY1[j] < BY0[i] - tol) continue;
+        // mỗi cặp chỉ xét một lần: tại ô đầu tiên chung của hai đoạn (không cần bảng nhớ cặp đã xét)
+        if (!arr.star && (Math.max(I0[i], I0[j]) !== arr.ci || Math.max(J0[i], J0[j]) !== arr.cj)) continue;
         const s = S[i], t = S[j];
-        if (Math.max(s[0], s[2]) < Math.min(t[0], t[2]) - tol || Math.max(t[0], t[2]) < Math.min(s[0], s[2]) - tol ||
-            Math.max(s[1], s[3]) < Math.min(t[1], t[3]) - tol || Math.max(t[1], t[3]) < Math.min(s[1], s[3]) - tol) continue;
         const dx1 = s[2] - s[0], dy1 = s[3] - s[1], dx2 = t[2] - t[0], dy2 = t[3] - t[1];
         const L1 = Math.hypot(dx1, dy1), L2 = Math.hypot(dx2, dy2);
         const den = dx1 * dy2 - dy1 * dx2;
@@ -1056,11 +1107,11 @@ const Topo = (() => {
     function nodeId(x, y) {
       const ix = Math.round(x / q), iy = Math.round(y / q);
       for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) {
-        const l = nodeMap.get((ix + a) + ',' + (iy + b));
+        const col = nodeMap.get(ix + a); const l = col && col.get(iy + b);
         if (l) for (const id of l) if (Math.abs(nodes[id * 2] - x) <= q && Math.abs(nodes[id * 2 + 1] - y) <= q) return id;
       }
       const id = nodes.length / 2; nodes.push(x, y);
-      const k = ix + ',' + iy; const l = nodeMap.get(k); if (l) l.push(id); else nodeMap.set(k, [id]);
+      let col = nodeMap.get(ix); if (!col) nodeMap.set(ix, col = new Map()); const l = col.get(iy); if (l) l.push(id); else col.set(iy, [id]);
       return id;
     }
     const edgeSet = new Set(); const edges = [];
@@ -1461,7 +1512,7 @@ return ret;
   const st = {
     sheets: [], archives: [], seq: 1,
     lvOn: {}, lvAlias: LS.get('lvAlias', {}), showText: true,
-    bgDark: LS.get('bgDark', true), sat: false, autoSave: LS.get('autoSave', true), satAlpha: LS.get('satAlpha', 1), lon0: LS.get('lon0', 106), mode: 'info',
+    bgDark: LS.get('bgDark', true), sat: false, autoSave: LS.get('autoSave', true), lite: LS.get('lite', false), satAlpha: LS.get('satAlpha', 1), lon0: LS.get('lon0', 106), mode: 'info',
     view: { cx: 0, cy: 0, s: 1 }, W: 0, H: 0, dpr: 1,
     sel: null, measure: [], measureDone: false, hover: null, marker: null,
     bndSheet: null, enc: 'auto',
@@ -1491,6 +1542,10 @@ return ret;
   function toast(msg, ms) { const t = $('toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('show'), ms || 3500); }
   function busy(on, text) { $('busy').classList.toggle('show', !!on); if (text) $('busyText').textContent = text; }
   const tick = () => new Promise((r) => setTimeout(r, 20));
+  // Lỗi bất ngờ: báo lên màn hình thay vì để trang treo
+  const errMsg = (e) => String(e && (e.message || e.reason) || e || 'không rõ');
+  window.addEventListener('error', (ev) => { try { busy(false); toast('Có lỗi: ' + errMsg(ev.error || ev.message) + '. Bản đồ vẫn dùng tiếp được.', 7000); } catch (_) {} });
+  window.addEventListener('unhandledrejection', (ev) => { try { busy(false); toast('Có lỗi: ' + errMsg(ev.reason) + '. Bản đồ vẫn dùng tiếp được.', 7000); } catch (_) {} });
   function colorOf(model, idx) {
     const c = model.colors[(idx >>> 0) & 0xff] || [255, 255, 255];
     let [r, g, b] = c;
@@ -1660,7 +1715,7 @@ return ret;
   function allBounds() {
     const b = { minx: Infinity, miny: Infinity, maxx: -Infinity, maxy: -Infinity };
     for (const s of st.sheets) if (s.visible) {
-      const m = s.model.bounds;
+      const m = s.model.view || s.model.bounds;
       b.minx = Math.min(b.minx, m.minx); b.miny = Math.min(b.miny, m.miny); b.maxx = Math.max(b.maxx, m.maxx); b.maxy = Math.max(b.maxy, m.maxy);
     }
     return b;
@@ -1805,7 +1860,8 @@ return ret;
     sh.raw = new Blob([u8]);
     if (st.autoSave && !restoring) Saved.put({ key, name, src: srcInfo || '', data: sh.raw, t: Date.now() }).then(savedInfo);
     st.sheets.push(sh);
-    sh.bnd = defaultBoundary(model);
+    // lớp ranh thửa: chỉ tự xác định khi cần (chạm vào thửa, tìm thửa) để mở tờ nhanh và nhẹ
+    Object.defineProperty(sh, 'bnd', { configurable: true, get() { if (!this._bnd) this._bnd = pickBoundary(this.model); return this._bnd; }, set(v) { this._bnd = v; if (v && v.length) LS.set('bndLast', v); } });
     st.bndSheet = sh.id;
     for (const id in model.levels) if (st.lvOn[id] === undefined) st.lvOn[id] = true;
     $('drop').classList.add('hide');
@@ -1815,12 +1871,28 @@ return ret;
     return sh;
   }
   // Tự chọn lớp ranh thửa: tổ hợp lớp tạo ra nhiều thửa khép kín có nhãn số nhất
+  function pickBoundary(model) {
+    const last = LS.get('bndLast', null);
+    if (Array.isArray(last) && last.length && last.every((lv) => model.levels[lv] !== undefined || model.elements.some((e) => e.lv === lv))) return last.slice();
+    let b;
+    if (st.lite) return liteBoundary(model);
+    try { b = defaultBoundary(model); } catch (e) { console.warn(e); b = []; }
+    if (b.length) LS.set('bndLast', b);
+    return b;
+  }
+  function liteBoundary(model) {
+    const cnt = {};
+    for (const e of model.elements) if (e.kind === 'L' && !e.ellipse && !e.sc) cnt[e.lv] = (cnt[e.lv] || 0) + (e.pts.length / 2 - 1);
+    const k = Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a])[0];
+    return k === undefined ? [] : [+k];
+  }
   function defaultBoundary(model) {
     const cnt = {};
     for (const e of model.elements) if (e.kind === 'L' && !e.ellipse && !e.sc) cnt[e.lv] = (cnt[e.lv] || 0) + (e.pts.length / 2 - 1);
-    const cands = Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a]).slice(0, 6).map(Number);
-    const nums = model.elements.filter((e) => e.kind === 'T' && e.text && /^\d+[a-zA-Z]?(\/.*)?$/.test(e.text.trim()))
+    const cands = Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a]).slice(0, isPhone() ? 4 : 6).map(Number);
+    let nums = model.elements.filter((e) => e.kind === 'T' && e.text && /^\d+[a-zA-Z]?(\/.*)?$/.test(e.text.trim()))
       .map((e) => [(e.minx + e.maxx) / 2, (e.miny + e.maxy) / 2]);
+    if (nums.length > 300) { const step = nums.length / 300; nums = Array.from({ length: 300 }, (_, i) => nums[Math.floor(i * step)]); }
     const score = (lvs) => {
       const S = new Set(lvs);
       const tp = Topo.build(model.elements.filter((e) => e.kind === 'L' && S.has(e.lv) && !e.sc).map((e) => e.pts));
@@ -1849,7 +1921,9 @@ return ret;
     const set = new Set(sh.bnd);
     const lines = [];
     for (const e of sh.model.elements) if (e.kind === 'L' && set.has(e.lv) && !e.sc) lines.push(e.pts);
-    sh.topo = Topo.build(lines); sh.topoKey = key;
+    try { sh.topo = Topo.build(lines); }
+    catch (err) { console.error(err); toast('Tờ ' + sh.name + ' quá nặng để tự tách thửa trên máy này. Hãy chọn ít lớp hơn ở mục Ranh thửa.', 7000); sh.topo = Topo.build([]); }
+    sh.topoKey = key;
     // gắn nhãn chữ vào thửa
     for (const e of sh.model.elements) {
       if (e.kind !== 'T' || !e.text || !e.text.trim()) continue;
@@ -1875,7 +1949,7 @@ return ret;
     const sh = st.sheets.find((s) => s.id === +card.dataset.id); if (!sh) return;
     const act = ev.target.dataset.act;
     if (act === 'vis') { sh.visible = ev.target.checked; draw(); }
-    else if (act === 'zoom') { sh.visible = true; refreshSheets(); fitBounds(sh.model.bounds); }
+    else if (act === 'zoom') { sh.visible = true; refreshSheets(); fitBounds(sh.model.view || sh.model.bounds); }
     else if (act === 'kmz') exportKMZ(sh);
     else if (act === 'gj') openSheetMap(sh);
     else if (act === 'close') {
@@ -1911,7 +1985,7 @@ return ret;
     }).join('');
   }
   async function openEntry(a, en, quiet) {
-    if (en.sheetId) { const sh = st.sheets.find((s) => s.id === en.sheetId); if (sh) { sh.visible = true; fitBounds(sh.model.bounds); } return sh; }
+    if (en.sheetId) { const sh = st.sheets.find((s) => s.id === en.sheetId); if (sh) { sh.visible = true; fitBounds(sh.model.view || sh.model.bounds); } return sh; }
     let data;
     try { data = await en.read(a.password); }
     catch (err) {
@@ -1925,7 +1999,7 @@ return ret;
     }
     if (isArchName(en.path) || Archive.kind(en.path, data) !== 'file') { await openArchive(en.path.split('/').pop(), data); return null; }
     const sh = addSheet(en.path.split('/').pop(), data, a.name);
-    if (sh) { en.sheetId = sh.id; refreshArchives(); if (!quiet) fitBounds(sh.model.bounds); }
+    if (sh) { en.sheetId = sh.id; refreshArchives(); if (!quiet) fitBounds(sh.model.view || sh.model.bounds); }
     return sh;
   }
   $('archList').addEventListener('click', async (ev) => {
@@ -1974,12 +2048,18 @@ return ret;
   async function handleFiles(files) {
     files = [...files]; if (!files.length) return;
     let lastSheet = null;
-    const dgns = [];
+    const dgns = []; let skipped = 0;
+    if (files.length > 1) {
+      // nhiều file: chỉ xét theo đuôi tên, không đọc nội dung; bỏ qua ảnh, PDF…
+      const keep = files.filter((f) => isDgnName(f.name) || isArchName(f.name));
+      skipped = files.length - keep.length; files = keep;
+    }
     for (let i = 0; i < files.length; i++) {
       const f = files[i];
       try {
         let k = 'file';
-        if (typeof f.slice === 'function') { const hb = await f.slice(0, 4).arrayBuffer(); k = Archive.kind(f.name, new Uint8Array(hb)); }
+        if (files.length > 1) k = /\.zip$/i.test(f.name) ? 'zip' : /\.rar$/i.test(f.name) ? 'rar' : 'file';
+        else if (typeof f.slice === 'function') { const hb = await f.slice(0, 4).arrayBuffer(); k = Archive.kind(f.name, new Uint8Array(hb)); }
         else k = isArchName(f.name) ? 'zip' : 'file';
         if (k === 'zip' || k === 'rar') { busy(true, `Đang đọc ${f.name}…`); await tick(); await openArchive(f.name, typeof f.slice === 'function' ? f : new Uint8Array(await f.arrayBuffer())); busy(false); continue; }
         dgns.push(f);
@@ -1992,16 +2072,23 @@ return ret;
         catch (err) { console.error(err); toast('Lỗi đọc file "' + f.name + '": ' + err.message, 6000); }
       }
       busy(false);
-      if (lastSheet) fitBounds(dgns.length > 1 ? allBounds() : lastSheet.model.bounds);
+      if (lastSheet) fitBounds(dgns.length > 1 ? allBounds() : (lastSheet.model.view || lastSheet.model.bounds));
     } else if (dgns.length > 1) {
       // Nhiều file: chỉ liệt kê, mở từng tờ khi bấm (tránh tràn bộ nhớ trên điện thoại)
       dgns.sort((x, y) => x.name.localeCompare(y.name, 'vi', { numeric: true }));
-      const entries = dgns.map((f) => ({ path: f.name, size: f.size, encrypted: false, read: async () => new Uint8Array(await f.arrayBuffer()) }));
+      const entries = dgns.map((f) => ({ path: f.name, size: f.size, encrypted: false, read: () => readFileU8(f) }));
       const a = { id: st.seq++, name: `${dgns.length} file đã chọn`, entries, password: undefined, picked: true };
       st.archives.push(a);
       refreshArchives(); showTab('tSheets'); $('drop').classList.add('hide');
       if (isPhone()) $('side').classList.add('open');
-      toast(`Đã chọn ${dgns.length} tờ. Bấm "Xem" ở tờ cần mở.`, 5000);
+      toast(`Đã chọn ${dgns.length} tờ${skipped ? ` (bỏ qua ${skipped} file không phải bản đồ)` : ''}. Bấm "Xem" ở tờ cần mở.`, 5000);
+    } else if (!dgns.length && skipped && !st.archives.length) toast(`Không có file .dgn, .zip hoặc .rar nào trong ${skipped} file đã chọn.`, 5000);
+  }
+  // Đọc file: dùng arrayBuffer, nếu lỗi thì thử FileReader (một số bản iOS cũ)
+  async function readFileU8(f) {
+    try { return new Uint8Array(await f.arrayBuffer()); }
+    catch (e1) {
+      return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(new Uint8Array(r.result)); r.onerror = () => rej(new Error('Không đọc được file "' + f.name + '". Hãy chọn lại thư mục.')); r.readAsArrayBuffer(f); });
     }
   }
   // Giới hạn số tờ mở cùng lúc trên điện thoại
@@ -2070,7 +2157,7 @@ return ret;
     const L = {};
     for (const e of sh.model.elements) if (e.kind === 'L' && !e.sc) L[e.lv] = (L[e.lv] || 0) + 1;
     el.innerHTML = `<select id="bndSheet" style="width:100%;margin-bottom:6px">${st.sheets.map((s) => `<option value="${s.id}" ${s.id === sh.id ? 'selected' : ''}>Tờ ${esc(s.name)}</option>`).join('')}</select>` +
-      Object.keys(L).map(Number).sort((a, b) => a - b).map((id) => `<label class="lv"><input type="checkbox" value="${id}" ${sh.bnd.includes(id) ? 'checked' : ''}><span class="n">${esc(lvName(id))}</span><span class="c">${L[id]} đường</span></label>`).join('');
+      Object.keys(L).map(Number).sort((a, b) => a - b).map((id) => `<label class="lv"><input type="checkbox" value="${id}" ${(sh._bnd || []).includes(id) ? 'checked' : ''}><span class="n">${esc(lvName(id))}</span><span class="c">${L[id]} đường</span></label>`).join('');
     $('bndSheet').onchange = (e) => { st.bndSheet = +e.target.value; refreshBnd(); };
   }
   $('bndList').addEventListener('change', (ev) => {
@@ -2582,6 +2669,8 @@ ${faces.map((f) => faceKML(sh, f)).join('\n')}
     const mb = list.reduce((a, r) => a + (r.data && r.data.size || 0), 0) / 1048576;
     $('savedInfo').textContent = list.length ? `Đang lưu ${list.length} tờ (${mb.toFixed(1)} MB) trên máy này.` : 'Chưa lưu tờ nào.';
   }
+  $('optLite').checked = st.lite;
+  $('optLite').onchange = (e) => { st.lite = e.target.checked; LS.set('lite', st.lite); toast(st.lite ? 'Đã bật chế độ nhẹ.' : 'Đã tắt chế độ nhẹ.'); };
   $('optAutoSave').checked = st.autoSave;
   $('optAutoSave').onchange = async (e) => {
     st.autoSave = e.target.checked; LS.set('autoSave', st.autoSave);
