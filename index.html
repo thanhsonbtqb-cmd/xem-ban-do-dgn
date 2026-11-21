@@ -131,6 +131,8 @@ a.btn.big{font-size:1.05em;padding:9px 16px;font-weight:600}
 #fSat,#fPng,#btnPng{display:none!important}
 
 tr.edge td{color:var(--accent,#d33);font-weight:600;border-top:none;border-bottom:none;padding-top:1px;padding-bottom:1px}tr.edge td:last-child{color:#ff3b30}tr.edge td:first-child{color:inherit;opacity:.7;font-weight:400}
+p.warn{background:rgba(255,170,0,.12);border:1px solid var(--warn);border-radius:8px;padding:8px;margin:8px 0}
+@media (max-width:900px){#info.meas{max-height:28%}#info.meas h4,#info.meas table{display:none}}
 </style>
 </head>
 <body>
@@ -2273,20 +2275,23 @@ return ret;
     const ints = texts.filter((e) => e.text && /^\d+[a-zA-Z]?$/.test(e.text.trim()));
     const pairOf = new Map();
     if (ints.length > 1 && ints.length < 60) {
+      // ghép theo cặp gần nhất trước, mỗi chữ chỉ thuộc một cặp (tránh chuỗi 562 / 1828 / 578 / 197 ghép lệch)
+      const cand = [];
       for (const a of ints) {
-        let best = null, bd = Infinity;
         const ax = (a.minx + a.maxx) / 2, ay = (a.miny + a.maxy) / 2;
         for (const b of ints) {
           if (a === b || a.lv !== b.lv || !/^\d+$/.test(b.text.trim())) continue;
           const h = Math.max(a.th || 0, b.th || 0, a.maxy - a.miny, 0.2);
           const bx = (b.minx + b.maxx) / 2, by = (b.miny + b.maxy) / 2;
           const dy = ay - by, dx = Math.abs(ax - bx);
-          if (dx < 2.5 * h && dy > 0.5 * h && dy < 3 * h && dy + dx < bd) { bd = dy + dx; best = b; }
+          if (dx < 2.5 * h && dy > 0.5 * h && dy < 3 * h) cand.push([dy + dx, a, b]);
         }
-        if (best) pairOf.set(a, best);
       }
+      cand.sort((x, y) => x[0] - y[0]);
+      const used = new Set();
+      for (const [, a, b] of cand) if (!used.has(a) && !used.has(b)) { used.add(a); used.add(b); pairOf.set(a, b); }
     }
-    const lowers = new Set(); for (const [a, b] of pairOf) if (!pairOf.has(b)) lowers.add(b);
+    const lowers = new Set(pairOf.values());
     const pairs = [];
     for (const [a, b] of pairOf) if (lowers.has(b)) pairs.push([a.text.trim(), +b.text.trim()]);
     for (const e of texts) {
@@ -2557,6 +2562,7 @@ ${body}</Document></kml>`;
         <div>Số đỉnh</div><div>${verts.length}</div>
         <div>Tâm thửa (WGS84)</div><div>${(() => { const [la, lo] = faceLL(f); return `${la.toFixed(6)}, ${lo.toFixed(6)}`; })()}</div>
       </div>
+      ${new Set(c.so).size > 1 ? `<p class="warn">⚠️ Vùng này chứa nhãn của ${new Set(c.so).size} thửa (${esc([...new Set(c.so)].join(', '))}). Ranh giữa các thửa chưa khép kín trên bản đồ nên diện tích tính là của cả vùng, không phải của riêng thửa ${esc(c.so[0])}.</p>` : ''}
       ${c.khac.length ? `<h4>Chữ khác trong thửa</h4><div>${c.khac.slice(0, 30).map((t) => '<span class="chip">' + esc(t) + '</span>').join(' ')}</div>` : ''}
       <h4>Bảng toạ độ đỉnh thửa (VN-2000)</h4>
       <div style="display:flex;gap:6px;margin-bottom:6px;flex-wrap:wrap"><button id="cpTbl">📋 Sao chép bảng (dán vào Excel)</button><button id="zmF">🔍 Phóng tới thửa</button></div>
@@ -2713,11 +2719,17 @@ ${body}</Document></kml>`;
         let f = Topo.find(sheetTopo(r.sh), cx, cy);
         if (!isParcel(f)) f = localFace(r.sh, cx, cy);
         if (!isParcel(f)) f = null;
+        // vùng chứa nhãn của nhiều thửa (ranh giữa các thửa bị hở): thử dựng thửa cục bộ quanh nhãn
+        if (f && new Set(classify(f.texts || []).so).size > 1) { const lf = localFace(r.sh, cx, cy); if (lf && isParcel(lf)) f = lf; }
         // chữ trùng số tìm nhưng thực ra là diện tích ghi của thửa khác (ví dụ 126 / 517) thì bỏ
         const isArea = !!(f && classify(f.texts || []).areaEls.has(r.e));
         return Object.assign(r, { f, cx, cy, isArea });
       }).filter((r, i, all) => !r.isArea || all.every((x) => x.isArea));
       // bỏ trùng (cùng thửa)
+      // ưu tiên: kết quả là thửa trước, tờ đang xem (chứa tâm màn hình) trước
+      const vc = [st.view.cx, st.view.cy];
+      const onView = (sh) => { const b = sh.model.view || sh.model.bounds; return b && vc[0] >= b.minx && vc[0] <= b.maxx && vc[1] >= b.miny && vc[1] <= b.maxy ? 0 : 1; };
+      res.sort((a, b) => (a.f ? 0 : 1) - (b.f ? 0 : 1) || onView(a.sh) - onView(b.sh));
       const seen = new Set(); const list = [];
       for (const r of res) { const k = r.sh.id + ':' + (r.f ? (r.f.minx.toFixed(2) + ',' + r.f.maxy.toFixed(2)) : r.cx.toFixed(1) + ',' + r.cy.toFixed(1)); if (!seen.has(k)) { seen.add(k); list.push(r); } }
       busy(false);
@@ -2756,12 +2768,13 @@ ${body}</Document></kml>`;
     if (p.length > 2) { const r = []; p.forEach((q) => r.push(q[0], q[1])); area = `<div>Diện tích (khép kín)</div><div><b>${fmt(Math.abs(Topo.ringArea(r)), 1)} m²</b></div>`; }
     $('infoBody').innerHTML = `<h3>📏 Đo trên bản đồ</h3><div class="kv"><div>Số điểm</div><div>${p.length}</div><div>Tổng chiều dài</div><div><b>${fmt(len, 2)} m</b></div>${area}</div>
       ${rows.length ? `<h4>Các đoạn</h4><table><tr><th>Đoạn</th><th>Dài (m)</th></tr>${rows.join('')}</table>` : ''}
-      <p class="small">Bấm vào bản đồ để thêm điểm, bấm đúp để kết thúc, phím Esc để đo lại.</p>`;
+      <p class="small">Chạm vào bản đồ để thêm điểm. Chạm lại điểm cuối (hoặc chạm đúp) để kết thúc, chạm tiếp để đo lần mới. Bấm ✕ để thu khung này, bấm lại 📏 để thoát chế độ đo.</p>`;
   }
   function setMode(m) {
     st.mode = m; $('btnInfo').classList.toggle('on', m === 'info'); $('btnMeasure').classList.toggle('on', m === 'measure');
     $('btnObj').classList.toggle('on', m === 'obj'); $('fObj').classList.toggle('on', m === 'obj'); $('fMeasure').classList.toggle('on', m === 'measure');
     st.measure = []; st.measureDone = false;
+    $('info').classList.toggle('meas', m === 'measure');
     if (m === 'measure') { st.sel = null; measureInfo(); }
     else if (m === 'obj') { st.sel = null; $('infoBody').innerHTML = '<h3>🎯 Xem đối tượng</h3><p class="small">Chạm vào bất kỳ đường, chữ hoặc ký hiệu nào để xem nó thuộc lớp (level) nào, màu, kiểu đường, font chữ. Bấm lại nút 🎯 để trở về xem thửa.</p>'; $('info').classList.remove('open'); draw(); toast('Chế độ xem đối tượng: chạm vào đường, chữ, ký hiệu'); }
     else clearSel();
@@ -2823,7 +2836,14 @@ ${body}</Document></kml>`;
       const w = s2w(e.offsetX, e.offsetY);
       if (st.mode === 'measure') {
         if (dbl) { st.measureDone = true; st.hover = null; }
-        else { if (st.measureDone) { st.measure = []; st.measureDone = false; } st.measure.push(w); }
+        else {
+          const last = st.measure[st.measure.length - 1];
+          // chạm lại gần điểm cuối (dưới 10 px) thì coi là kết thúc, không thêm điểm trùng
+          const near = last && Math.hypot(w[0] - last[0], w[1] - last[1]) * st.view.s < 10;
+          if (st.measureDone) { if (!near) { st.measure = [w]; st.measureDone = false; } }
+          else if (near) { if (st.measure.length > 1) { st.measureDone = true; st.hover = null; } }
+          else st.measure.push(w);
+        }
         measureInfo(); draw();
       } else if (dbl && e.pointerType === 'touch') zoomAt(e.offsetX, e.offsetY, 2);
       else if (!dbl) { if (st.mode === 'obj') pickElem(e.offsetX, e.offsetY, e.pointerType === 'touch'); else pickAt(e.offsetX, e.offsetY); }
