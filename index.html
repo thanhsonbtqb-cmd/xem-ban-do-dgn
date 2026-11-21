@@ -1028,7 +1028,7 @@ const Topo = (() => {
     return c;
   }
   function build(lines, tol) {
-    tol = tol || 0.005;
+    tol = tol || 0.05; // nối các đầu đường hở dưới 5 cm (sai số số hoá)
     // 1. Gom đoạn thẳng
     const S = [];
     let minx = Infinity, miny = Infinity, maxx = -Infinity, maxy = -Infinity;
@@ -1892,7 +1892,7 @@ return ret;
     if (st.autoSave && !restoring) Saved.put({ key, name, src: srcInfo || '', data: sh.raw, t: Date.now() }).then(savedInfo);
     st.sheets.push(sh);
     // lớp ranh thửa: chỉ tự xác định khi cần (chạm vào thửa, tìm thửa) để mở tờ nhanh và nhẹ
-    Object.defineProperty(sh, 'bnd', { configurable: true, get() { if (!this._bnd) this._bnd = pickBoundary(this.model); return this._bnd; }, set(v) { this._bnd = v; if (v && v.length) LS.set('bndUser', v); } });
+    Object.defineProperty(sh, 'bnd', { configurable: true, get() { if (!this._bnd) this._bnd = pickBoundary(this.model); return this._bnd; }, set(v) { this._bnd = v; this.localFaces = null; this.localMiss = null; if (v && v.length) LS.set('bndUser', v); } });
     st.bndSheet = sh.id;
     for (const id in model.levels) if (st.lvOn[id] === undefined) st.lvOn[id] = true;
     $('drop').classList.add('hide');
@@ -1971,6 +1971,57 @@ return ret;
       if (f) (f.texts || (f.texts = [])).push(e);
     }
     return sh.topo;
+  }
+  // Thửa không khép kín trên lớp ranh chính (ví dụ một cạnh là bờ sông, suối, đường nằm ở lớp khác):
+  // dựng thửa cục bộ quanh điểm chạm, thử thêm lần lượt các lớp có đường nét gần đó.
+  function goodFace(f, X0, Y0, X1, Y1) {
+    if (!f) return false;
+    const m = (X1 - X0) * 0.002;
+    if (f.minx <= X0 + m || f.maxx >= X1 - m || f.miny <= Y0 + m || f.maxy >= Y1 - m) return false;
+    if (!isParcel(f)) return false;
+    const c = classify(f.texts || [], Math.abs(f.net));
+    if (new Set(c.so).size !== 1) return false;
+    // có diện tích ghi thì diện tích tính phải khớp (lệch dưới 10%), tránh nhận nhầm vùng bị đường đồng mức, nhà… cắt nhỏ
+    const pr = c.pairs.find((p) => p[0] === c.so[0]);
+    const dt = pr ? pr[1] : parseFloat(String(c.dt[0] || '').replace(/\./g, '').replace(',', '.'));
+    if (dt > 0) { const r = Math.abs(f.net) / dt; return r > 0.9 && r < 1.1; }
+    return c.loai.length > 0;
+  }
+  function localFace(sh, x, y) {
+    if (sh.localFaces) for (const f of sh.localFaces) if (Topo.contains(f, x, y)) return f;
+    const mk = Math.floor(x / 40) + ',' + Math.floor(y / 40);
+    if (sh.localMiss && sh.localMiss.has(mk)) return null;
+    const bnd = new Set(sh.bnd);
+    for (const R of [100, 350]) {
+      const X0 = x - R, X1 = x + R, Y0 = y - R, Y1 = y + R;
+      const inW = (e) => !(e.maxx < X0 || e.minx > X1 || e.maxy < Y0 || e.miny > Y1);
+      const byLv = new Map(); const texts = [];
+      for (const e of sh.model.elements) {
+        if (!inW(e)) continue;
+        if (e.kind === 'T') { if (e.text && e.text.trim()) texts.push(e); continue; }
+        if (e.kind !== 'L' || e.sc || !e.pts) continue;
+        (byLv.get(e.lv) || byLv.set(e.lv, []).get(e.lv)).push(e);
+      }
+      const base = []; for (const lv of bnd) if (byLv.has(lv)) base.push(...byLv.get(lv));
+      // các lớp khác, lớp nào có đường nằm gần điểm chạm thì thử trước
+      const dist = (e) => { let d = Infinity; const p = e.pts; for (let i = 0; i + 3 < p.length; i += 2) { const ax = p[i], ay = p[i + 1], dx = p[i + 2] - ax, dy = p[i + 3] - ay; const L = dx * dx + dy * dy; let t = L ? ((x - ax) * dx + (y - ay) * dy) / L : 0; t = Math.max(0, Math.min(1, t)); d = Math.min(d, Math.hypot(ax + t * dx - x, ay + t * dy - y)); } return d; };
+      const extras = [...byLv.keys()].filter((lv) => !bnd.has(lv)).map((lv) => ({ lv, d: Math.min(...byLv.get(lv).map(dist)) })).sort((a, b) => a.d - b.d).map((o) => o.lv);
+      const tries = [[]].concat(extras.slice(0, 4).map((lv) => [lv]));
+      if (extras.length > 1) tries.push(extras.slice(0, 3), extras);
+      for (const add of tries) {
+        const lines = base.concat(...add.map((lv) => byLv.get(lv))).map((e) => e.pts);
+        let tp; try { tp = Topo.build(lines); } catch (err) { continue; }
+        const f = Topo.find(tp, x, y);
+        if (!f) continue;
+        for (const e of texts) { const cx = (e.minx + e.maxx) / 2, cy = (e.miny + e.maxy) / 2; if (Topo.contains(f, cx, cy)) (f.texts || (f.texts = [])).push(e); }
+        if (goodFace(f, X0, Y0, X1, Y1)) {
+          f.extraLv = add.length ? add : null; (sh.localFaces || (sh.localFaces = [])).push(f);
+          return f;
+        }
+      }
+    }
+    (sh.localMiss || (sh.localMiss = new Set())).add(mk);
+    return null;
   }
   function refreshSheets() {
     const el = $('sheetList');
@@ -2217,7 +2268,7 @@ return ret;
   // ---------- thông tin thửa ----------
   function classify(texts, area, prefer) {
     const out = { so: [], loai: [], dt: [], khac: [], areaEls: new Set() };
-    const dts = []; const soLv = new Set(); const loaiEls = [];
+    const dts = []; const soLv = new Set(); const loaiEls = []; const soEls = [];
     // Nhãn thửa dạng hai số nguyên xếp chồng (số thửa ở trên, diện tích ở dưới), ví dụ 126 / 517
     const ints = texts.filter((e) => e.text && /^\d+[a-zA-Z]?$/.test(e.text.trim()));
     const pairOf = new Map();
@@ -2242,11 +2293,20 @@ return ret;
       const t = e.text.trim(); if (!t) continue;
       if (lowers.has(e)) { out.dt.push(t); out.areaEls.add(e); soLv.add(e.lv); continue; }
       const parts = t.split('/').map((x) => x.trim());
-      if (parts.length === 2 && /^\d+[a-zA-Z]?$/.test(parts[0]) && /^\d+([.,]\d+)?$/.test(parts[1])) { out.so.push(parts[0]); out.dt.push(parts[1]); soLv.add(e.lv); continue; }
-      if (/^\d+[a-zA-Z]?\/?$/.test(t)) { out.so.push(t.replace('/', '')); soLv.add(e.lv); continue; }
+      if (parts.length === 2 && /^\d+[a-zA-Z]?$/.test(parts[0]) && /^\d+([.,]\d+)?$/.test(parts[1])) { out.so.push(parts[0]); soEls.push([parts[0], e.lv]); out.dt.push(parts[1]); soLv.add(e.lv); continue; }
+      if (/^\d+[a-zA-Z]?\/?$/.test(t)) { out.so.push(t.replace('/', '')); soEls.push([t.replace('/', ''), e.lv]); soLv.add(e.lv); continue; }
       if (/^\d+[.,]\d+$/.test(t) || /^\d+(\.\d{3})*,\d+$/.test(t)) { dts.push(e); continue; }
       if (/^[A-Z]{3}([+,][A-Z]{3})*$/.test(t)) { out.loai.push(t); loaiEls.push(e); continue; }
       out.khac.push(t);
+    }
+    // Số nguyên ở lớp khác lớp nhãn thửa (mã ký hiệu cây, số hiệu lô, mảnh…) không phải số thửa.
+    // Lớp nhãn thửa: lớp của các cặp số thửa / diện tích, nếu không có thì lớp 13 (theo quy định phân lớp).
+    let labLv = new Set([...pairOf.keys()].filter((a) => lowers.has(pairOf.get(a))).map((a) => a.lv));
+    if (!labLv.size && soEls.some((x) => x[1] === 13)) labLv = new Set([13]);
+    if (labLv.size) {
+      const keep = soEls.filter((x) => labLv.has(x[1])).map((x) => x[0]);
+      for (const x of soEls) if (!labLv.has(x[1])) out.khac.push(x[0]);
+      out.so = keep;
     }
     // diện tích ghi: ưu tiên chữ cùng lớp với số thửa (tránh nhầm số đo cạnh)
     let pick = dts.filter((e) => soLv.has(e.lv));
@@ -2277,7 +2337,7 @@ return ret;
     if (!f) return false;
     const c = classify(f.texts || []);
     const longTexts = c.khac.filter((t) => t.length > 25).length;
-    return new Set(c.so).size <= 3 && (f.texts || []).length <= 20 && longTexts <= 2;
+    return new Set(c.so).size <= 3 && (f.texts || []).length <= 80 && longTexts <= 2;
   }
   // ---------- xuất KMZ / KML (WGS84) ----------
   const xesc = (t) => String(t).replace(/[<>&"']/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' }[c]));
@@ -2295,7 +2355,7 @@ return ret;
     else { const r = f.ring; lx = 0; ly = 0; for (let i = 0; i < r.length; i += 2) { lx += r[i]; ly += r[i + 1]; } lx /= r.length / 2; ly /= r.length / 2; }
     const [la, lo] = VN2000.toWGS84(lx, ly, st.lon0);
     const name = (so[0] || '?') + (loai.length ? ' ' + loai.join(',') : '');
-    const rows = [['Tờ bản đồ', sh.name], ['Số thửa', so.join(', ') || '–'], ['Loại đất', loai.map((l) => l + (LAND[l] ? ' – ' + LAND[l] : '')).join('; ') || '–'], ['Diện tích tính (m²)', area.toFixed(1)], ['Diện tích ghi (m²)', (so.length > 1 && c.pairs.some((p) => p[0] === so[0]) ? c.dt[0] : [...new Set(c.dt)].join('; ')) || '–']];
+    const rows = [['Tờ bản đồ', sh.name], ['Số thửa', so.join(', ') || '–'], ['Loại đất', loai.map((l) => l + (LAND[l] ? ' – ' + LAND[l] : '')).join('; ') || '–'], ['Diện tích tính (m²)', area.toFixed(1)], ['Diện tích ghi (m²)', (c.pairs.some((p) => p[0] === so[0]) ? c.dt[0] : [...new Set(c.dt)].join('; ')) || '–']];
     const desc = '<table>' + rows.map(([k, v]) => `<tr><td>${xesc(k)}</td><td><b>${xesc(v)}</b></td></tr>`).join('') + '</table>';
     return `<Placemark><name>${xesc(name)}</name><styleUrl>#thua</styleUrl><description><![CDATA[${desc}]]></description>
 <ExtendedData>${rows.map(([k, v]) => `<Data name="${xesc(k)}"><value>${xesc(v)}</value></Data>`).join('')}</ExtendedData>
@@ -2492,7 +2552,7 @@ ${body}</Document></kml>`;
         <div>Số thửa</div><div>${c.so.length ? esc([...new Set(c.so)].join(', ')) : '<span class="small">không thấy nhãn số thửa</span>'}</div>
         <div>Loại đất</div><div>${loai.length ? loai.map((l) => `<b>${esc(l)}</b>${l.split(/[+,]/).map((k) => LAND[k] ? ' – ' + LAND[k] : '').join('')}`).join('<br>') : '–'}</div>
         <div>Diện tích tính</div><div><b>${fmt(area, 1)} m²</b></div>
-        <div>Diện tích ghi</div><div>${c.dt.length ? esc(c.so.length > 1 && c.pairs.some((p) => p[0] === c.so[0]) ? c.dt[0] : [...new Set(c.dt)].join('; ')) + ' m²' : '–'}</div>
+        <div>Diện tích ghi</div><div>${c.dt.length ? esc(c.pairs.some((p) => p[0] === c.so[0]) ? c.dt[0] : [...new Set(c.dt)].join('; ')) + ' m²' : '–'}</div>
         <div>Chu vi</div><div>${fmt(per, 2)} m</div>
         <div>Số đỉnh</div><div>${verts.length}</div>
         <div>Tâm thửa (WGS84)</div><div>${(() => { const [la, lo] = faceLL(f); return `${la.toFixed(6)}, ${lo.toFixed(6)}`; })()}</div>
@@ -2501,7 +2561,7 @@ ${body}</Document></kml>`;
       <h4>Bảng toạ độ đỉnh thửa (VN-2000)</h4>
       <div style="display:flex;gap:6px;margin-bottom:6px;flex-wrap:wrap"><button id="cpTbl">📋 Sao chép bảng (dán vào Excel)</button><button id="zmF">🔍 Phóng tới thửa</button></div>
       <table><thead><tr><th>Điểm</th><th>X (m)</th><th>Y (m)</th><th>Cạnh (m)</th></tr></thead><tbody>${rows}</tbody></table>
-      <p class="small">Chiều dài cạnh ghi ở dòng giữa hai điểm (ví dụ 1-2 là cạnh từ điểm 1 đến điểm 2), và ghi ở giữa mỗi cạnh trên bản đồ. Diện tích tính từ ranh thửa trên các lớp: ${esc(sh.bnd.map(lvName).join(', '))}. ${f.holes ? 'Đã trừ ' + f.holes.length + ' vùng nằm trong thửa.' : ''}</p>`;
+      <p class="small">Chiều dài cạnh ghi ở dòng giữa hai điểm (ví dụ 1-2 là cạnh từ điểm 1 đến điểm 2). Diện tích tính từ ranh thửa trên các lớp: ${esc(sh.bnd.concat(f.extraLv || []).map(lvName).join(', '))}${f.extraLv ? ' (thửa này có cạnh nằm trên lớp ' + esc(f.extraLv.map(lvName).join(', ')) + ')' : ''}. ${f.holes ? 'Đã trừ ' + f.holes.length + ' vùng nằm trong thửa.' : ''}</p>`;
     $('kmzF').onclick = () => exportKMZ(sh, f);
     $('cpTbl').onclick = () => {
       let tsv = `Tờ bản đồ\t${sh.name}\nThửa số\t${c.so[0] || ''}\nDiện tích (m2)\t${area.toFixed(1)}\n\nĐiểm\tX (m)\tY (m)\tCạnh (m)\n`;
@@ -2602,16 +2662,29 @@ ${body}</Document></kml>`;
   }
   function pickAt(px, py) {
     const [x, y] = s2w(px, py);
+    const cand = [];
     for (let i = st.sheets.length - 1; i >= 0; i--) {
       const sh = st.sheets[i];
       if (!sh.visible) continue;
       const b = sh.model.bounds; if (x < b.minx || x > b.maxx || y < b.miny || y > b.maxy) continue;
-      const tp = sheetTopo(sh);
-      const f = Topo.find(tp, x, y);
+      const f = Topo.find(sheetTopo(sh), x, y);
       if (f && isParcel(f)) { st.marker = null; selectFace(sh, f); return; }
+      cand.push(sh);
     }
-    const list = elemsNear(x, y, 8 / st.view.s);
-    if (list.length) showElem(list[0].sh, list[0].e, list, 0, 'Chỗ này không nằm trong thửa khép kín. Muốn xem lớp của đường, chữ bất kỳ, hãy dùng nút 🎯 Đối tượng.'); else clearSel();
+    const fallback = () => {
+      const list = elemsNear(x, y, 8 / st.view.s);
+      if (list.length) showElem(list[0].sh, list[0].e, list, 0, 'Chỗ này không nằm trong thửa khép kín (ranh thửa trên bản đồ bị hở hoặc thiếu đoạn, nên không tính được diện tích). Muốn xem lớp của đường, chữ bất kỳ, hãy dùng nút 🎯 Đối tượng.'); else clearSel();
+    };
+    if (!cand.length) { fallback(); return; }
+    // Không có thửa khép kín trên lớp ranh chính: dò cục bộ (cạnh thửa có thể nằm ở lớp đường, sông suối)
+    busy(true, 'Đang dò ranh thửa quanh chỗ chạm…');
+    setTimeout(() => {
+      let hit = null;
+      try { for (const sh of cand) { const f = localFace(sh, x, y); if (f) { hit = [sh, f]; break; } } }
+      catch (e) { console.error(e); }
+      busy(false);
+      if (hit) { st.marker = null; selectFace(hit[0], hit[1]); } else fallback();
+    }, 30);
   }
 
   // ---------- tìm kiếm ----------
@@ -2638,6 +2711,7 @@ ${body}</Document></kml>`;
       const res = (exact.length ? exact : part).slice(0, 300).map((r) => {
         const cx = (r.e.minx + r.e.maxx) / 2, cy = (r.e.miny + r.e.maxy) / 2;
         let f = Topo.find(sheetTopo(r.sh), cx, cy);
+        if (!isParcel(f)) f = localFace(r.sh, cx, cy);
         if (!isParcel(f)) f = null;
         // chữ trùng số tìm nhưng thực ra là diện tích ghi của thửa khác (ví dụ 126 / 517) thì bỏ
         const isArea = !!(f && classify(f.texts || []).areaEls.has(r.e));
@@ -2645,7 +2719,7 @@ ${body}</Document></kml>`;
       }).filter((r, i, all) => !r.isArea || all.every((x) => x.isArea));
       // bỏ trùng (cùng thửa)
       const seen = new Set(); const list = [];
-      for (const r of res) { const k = r.sh.id + ':' + (r.f ? r.sh.topo.faces.indexOf(r.f) : r.cx.toFixed(1) + ',' + r.cy.toFixed(1)); if (!seen.has(k)) { seen.add(k); list.push(r); } }
+      for (const r of res) { const k = r.sh.id + ':' + (r.f ? (r.f.minx.toFixed(2) + ',' + r.f.maxy.toFixed(2)) : r.cx.toFixed(1) + ',' + r.cy.toFixed(1)); if (!seen.has(k)) { seen.add(k); list.push(r); } }
       busy(false);
       st.found = list;
       const el = $('findList');
